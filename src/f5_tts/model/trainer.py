@@ -359,16 +359,17 @@ class Trainer:
             for batch in current_dataloader:
                 with self.accelerator.accumulate(self.model):
                     text_inputs = batch["text"]
-                    mel_spec = batch["mel"].permute(0, 2, 1)
+                    orig_mel_spec = batch["orig_mel"].permute(0, 2, 1)
+                    aug_mel_spec = batch["aug_mel"].permute(0, 2, 1)
                     mel_lengths = batch["mel_lengths"]
 
                     # TODO. add duration predictor training
                     if self.duration_predictor is not None and self.accelerator.is_local_main_process:
-                        dur_loss = self.duration_predictor(mel_spec, lens=batch.get("durations"))
+                        dur_loss = self.duration_predictor(orig_mel_spec, lens=batch.get("durations"))
                         self.accelerator.log({"duration loss": dur_loss.item()}, step=global_update)
 
                     loss, cond, pred = self.model(
-                        mel_spec, text=text_inputs, lens=mel_lengths, noise_scheduler=self.noise_scheduler
+                        orig_mel_spec, aug_mel_spec, text=text_inputs, lens=mel_lengths, noise_scheduler=self.noise_scheduler
                     )
                     self.accelerator.backward(loss)
 
@@ -405,7 +406,7 @@ class Trainer:
                         ]
                         with torch.inference_mode():
                             generated, _ = self.accelerator.unwrap_model(self.model).sample(
-                                cond=mel_spec[0][:ref_audio_len].unsqueeze(0),
+                                cond=aug_mel_spec[0][:ref_audio_len].unsqueeze(0),
                                 text=infer_text,
                                 duration=ref_audio_len * 2,
                                 steps=nfe_step,
@@ -414,7 +415,7 @@ class Trainer:
                             )
                             generated = generated.to(torch.float32)
                             gen_mel_spec = generated[:, ref_audio_len:, :].permute(0, 2, 1).to(self.accelerator.device)
-                            ref_mel_spec = batch["mel"][0].unsqueeze(0)
+                            ref_mel_spec = batch["aug_mel"][0].unsqueeze(0)
                             if self.vocoder_name == "vocos":
                                 gen_audio = vocoder.decode(gen_mel_spec).cpu()
                                 ref_audio = vocoder.decode(ref_mel_spec).cpu()

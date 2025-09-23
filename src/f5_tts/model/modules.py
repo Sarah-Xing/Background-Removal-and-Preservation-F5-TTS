@@ -100,6 +100,29 @@ def get_vocos_mel_spectrogram(
     mel = mel.clamp(min=1e-5).log()
     return mel
 
+# speaker encoder
+#import torch
+#import torch.nn as nn
+
+class SpeakerEncoder(nn.Module):
+    def __init__(self, num_layers=2, num_heads=2, dim=100, out_dim=712): # mel_dim=100?
+        super().__init__()
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=dim,
+            nhead=num_heads,
+            activation="relu",  # No activation
+            batch_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.proj = nn.Linear(dim, out_dim)
+    def forward(self, x):
+        # x: [batch, seq_len, dim]
+        x_seq = self.encoder(x)  # [batch, seq_len, dim]
+        x_mean = torch.mean(x_seq, dim=1).unsqueeze(1)  # [batch, 1, dim]
+        x_proj = self.proj(x_mean)  # [batch, 1, out_dim]
+        return x_proj
+
+# noised input audio and context mixing embedding
 
 class MelSpec(nn.Module):
     def __init__(

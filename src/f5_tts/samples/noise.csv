@@ -1,0 +1,6 @@
+ID,duration,file_path,wav_format,wav_opts
+noise1,33.12325,/4T/home/hua/TTS/F5_noisy/F5-TTS/src/f5_tts/samples/noise/noise1.wav,wav,
+noise2,5.0,/4T/home/hua/TTS/F5_noisy/F5-TTS/src/f5_tts/samples/noise/noise2.wav,wav,
+noise3,1.0,/4T/home/hua/TTS/F5_noisy/F5-TTS/src/f5_tts/samples/noise/noise3.wav,wav,
+noise4,17.65875,/4T/home/hua/TTS/F5_noisy/F5-TTS/src/f5_tts/samples/noise/noise4.wav,wav,
+noise5,13.685625,/4T/home/hua/TTS/F5_noisy/F5-TTS/src/f5_tts/samples/noise/noise5.wav,wav,

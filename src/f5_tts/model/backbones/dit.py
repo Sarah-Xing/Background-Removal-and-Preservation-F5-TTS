@@ -79,7 +79,6 @@ class TextEmbedding(nn.Module):
         return text
 
 
-# noised input audio and context mixing embedding
 
 
 class InputEmbedding(nn.Module):
@@ -88,11 +87,11 @@ class InputEmbedding(nn.Module):
         self.proj = nn.Linear(mel_dim * 2 + text_dim, out_dim)
         self.conv_pos_embed = ConvPositionEmbedding(dim=out_dim)
 
-    def forward(self, x: float["b n d"], cond: float["b n d"], text_embed: float["b n d"], drop_audio_cond=False):  # noqa: F722
+    def forward(self, x: float["b n d"], cond: float["b n d"], text_embed: float["b n d"], spk_embedding: float["b 1 d"], cont: float["b 1 d"], drop_audio_cond=False):  # noqa: F722
         if drop_audio_cond:  # cfg for cond audio
             cond = torch.zeros_like(cond)
 
-        x = self.proj(torch.cat((x, cond, text_embed), dim=-1))
+        x = self.proj(torch.cat((x, cond, text_embed), dim=-1) + spk_embedding + cont)
         x = self.conv_pos_embed(x) + x
         return x
 
@@ -155,6 +154,9 @@ class DiT(nn.Module):
         self.norm_out = AdaLayerNorm_Final(dim)  # final modulation
         self.proj_out = nn.Linear(dim, mel_dim)
 
+        #self.speaker_encoder_remove = SpeakerEncoder(num_layers=2, num_heads=2, dim=100)
+        #self.speaker_encoder_reserve = SpeakerEncoder(num_layers=2, num_heads=2, dim=100)
+
         self.checkpoint_activations = checkpoint_activations
 
         self.initialize_weights()
@@ -190,6 +192,8 @@ class DiT(nn.Module):
         time: float["b"] | float[""],  # time step  # noqa: F821 F722
         drop_audio_cond,  # cfg for cond audio
         drop_text,  # cfg for text
+        spk_embedding, # speaker embedding
+        cont: float["b 1 d"], # control variable
         mask: bool["b n"] | None = None,  # noqa: F722
         cache=False,
     ):
@@ -199,7 +203,7 @@ class DiT(nn.Module):
 
         # t: conditioning time, text: text, x: noised audio + cond audio + text
         t = self.time_embed(time)
-        if cache:
+        if cache: 
             if drop_text:
                 if self.text_uncond is None:
                     self.text_uncond = self.text_embed(text, seq_len, drop_text=True)
@@ -208,9 +212,23 @@ class DiT(nn.Module):
                 if self.text_cond is None:
                     self.text_cond = self.text_embed(text, seq_len, drop_text=False)
                 text_embed = self.text_cond
-        else:
+        else: # convNextv2
             text_embed = self.text_embed(text, seq_len, drop_text=drop_text)
-        x = self.input_embed(x, cond, text_embed, drop_audio_cond=drop_audio_cond)
+
+        # Generate random binary control variable c for each sample in batch
+        #c = torch.randint(0, 2, (batch,), device=self.device)  # Generate 0 or 1 randomly
+        #c = c.view(-1, 1, 1)  # Shape: [batch, 1, 1] for broadcasting
+        
+        # Apply speaker encoders to x1
+        #x1_encoded_remove = self.speaker_encoder_remove(x1)
+        #x1_encoded_reserve = self.speaker_encoder_reserve(x1)
+        
+        # Mix the outputs based on control variable c
+        #speaker_encoded = c * x1_encoded_remove + (1 - c) * x1_encoded_reserve
+        
+        # Use x1_encoded in place of x1 for further processing
+        #x1 = x1_encoded
+        x = self.input_embed(x, cond, text_embed, spk_embedding, cont, drop_audio_cond=drop_audio_cond)
 
         rope = self.rotary_embed.forward_from_seq_len(seq_len)
 

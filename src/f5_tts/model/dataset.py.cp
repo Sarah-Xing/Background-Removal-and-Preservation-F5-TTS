@@ -4,8 +4,6 @@ from importlib.resources import files
 import torch
 import torch.nn.functional as F
 import torchaudio
-import random
-import pandas as pd
 from datasets import Dataset as Dataset_
 from datasets import load_from_disk
 from torch import nn
@@ -14,8 +12,6 @@ from tqdm import tqdm
 
 from f5_tts.model.modules import MelSpec
 from f5_tts.model.utils import default
-from f5_tts.model.signal_processing import add_noise, reverberate
-
 
 
 class HFDataset(Dataset):
@@ -88,7 +84,7 @@ class CustomDataset(Dataset):
         self,
         custom_dataset: Dataset,
         durations=None,
-        target_sample_rate=16_000,
+        target_sample_rate=24_000,
         hop_length=256,
         n_mel_channels=100,
         n_fft=1024,
@@ -96,12 +92,6 @@ class CustomDataset(Dataset):
         mel_spec_type="vocos",
         preprocessed_mel=False,
         mel_spec_module: nn.Module | None = None,
-        p_noise=0.3,
-        p_reverb=0.3,
-        p_clean=0.4,
-        noise_csv='src/f5_tts/samples/noise.csv',
-        snr_range=(0, 10),  # SNR range in dB
-        rir_csv='src/f5_tts/samples/RIRs.csv',
     ):
         self.data = custom_dataset
         self.durations = durations
@@ -124,16 +114,6 @@ class CustomDataset(Dataset):
                     mel_spec_type=mel_spec_type,
                 ),
             )
-        
-        # Load noise file paths from CSV
-        self.noise_df = pd.read_csv(noise_csv)
-        self.snr_range = snr_range
-        self.rir_df = pd.read_csv(rir_csv)
-
-        # ...existing code...
-        self.augmentation_types = ['clean', 'noise', 'reverb']
-        self.augmentation_weights = [p_clean, p_noise, p_reverb]
-        assert abs(sum(self.augmentation_weights) - 1.0) < 1e-6, "Probabilities must sum to 1"
 
     def get_frame_len(self, index):
         if (
@@ -144,25 +124,6 @@ class CustomDataset(Dataset):
 
     def __len__(self):
         return len(self.data)
-    
-    def load_random_noise(self, paths):
-        """Load a random noise file and ensure it matches target sample rate"""
-        # Randomly select a noise file
-        noise_path = random.choice(paths.tolist())
-        
-        # Load noise audio
-        noise, noise_sr = torchaudio.load(noise_path)
-        
-        # Make mono if stereo
-        if noise.shape[0] > 1:
-            noise = torch.mean(noise, dim=0, keepdim=True)
-            
-        # Resample if necessary
-        if noise_sr != self.target_sample_rate:
-            resampler = torchaudio.transforms.Resample(noise_sr, self.target_sample_rate)
-            noise = resampler(noise)
-            
-        return noise
 
     def __getitem__(self, index):
         while True:
@@ -182,9 +143,6 @@ class CustomDataset(Dataset):
         else:
             audio, source_sample_rate = torchaudio.load(audio_path)
 
-            ###add noise and reverb
-            
-
             # make sure mono input
             if audio.shape[0] > 1:
                 audio = torch.mean(audio, dim=0, keepdim=True)
@@ -193,43 +151,19 @@ class CustomDataset(Dataset):
             if source_sample_rate != self.target_sample_rate:
                 resampler = torchaudio.transforms.Resample(source_sample_rate, self.target_sample_rate)
                 audio = resampler(audio)
-            
-            # Generate original mel spectrogram
-            orig_mel_spec = self.mel_spectrogram(audio)
-            orig_mel_spec = orig_mel_spec.squeeze(0)  # Remove batch dimension
+            # do augmentation here if needed
+            #if self.do_augmentation:
+            #    audio, wav_lens = self.hparams.wav_augment(wavs, wav_lens)
 
-            # Choose augmentation type
-            aug_type = random.choices(self.augmentation_types, weights=self.augmentation_weights, k=1)[0]
-
-            # Apply chosen augmentation
-            if aug_type == 'noise':
-                # Load random noise file
-                noise = self.load_random_noise(self.noise_df['file_path'])
-            
-                # Random SNR between min and max
-                snr = random.uniform(self.snr_range[0], self.snr_range[1])
-            
-                # Apply noise
-                audio = add_noise(audio, noise, snr)
-            elif aug_type == 'reverb':
-                rir = self.load_random_noise(self.rir_df['file_path'])
-                audio = reverberate(audio, rir)
-            
-            # Generate mel spectrogram
-            aug_mel_spec = self.mel_spectrogram(audio)
-            aug_mel_spec = aug_mel_spec.squeeze(0)  # '1 d t -> d t'
-            
-
-                    
+            # to mel spectrogram
+            mel_spec = self.mel_spectrogram(audio)
+            mel_spec = mel_spec.squeeze(0)  # '1 d t -> d t'
 
         return {
-            #"mel_spec": mel_spec,
-            "clean_mel_spec": orig_mel_spec,
-            "noisy_mel_spec": aug_mel_spec,
-            "aug_type": aug_type,
-            "text": text
+            "mel_spec": mel_spec,
+            "text": text,
         }
-    
+
 
 # Dynamic Batch Sampler
 class DynamicBatchSampler(Sampler[list[int]]):
@@ -326,7 +260,6 @@ def load_dataset(
 
     if dataset_type == "CustomDataset":
         rel_data_path = str(files("f5_tts").joinpath(f"../../data/{dataset_name}_{tokenizer}"))
-        noise_data_path = str(files("f5_tts").joinpath(f"samples"))
         if audio_type == "raw":
             try:
                 train_dataset = load_from_disk(f"{rel_data_path}/raw")
@@ -339,15 +272,11 @@ def load_dataset(
         with open(f"{rel_data_path}/duration.json", "r", encoding="utf-8") as f:
             data_dict = json.load(f)
         durations = data_dict["duration"]
-        noise_csv_path = f"{noise_data_path}/noise.csv"
-        rir_csv_path = f"{noise_data_path}/RIRs.csv"
         train_dataset = CustomDataset(
             train_dataset,
             durations=durations,
             preprocessed_mel=preprocessed_mel,
             mel_spec_module=mel_spec_module,
-            noise_csv=noise_csv_path,
-            rir_csv=rir_csv_path,
             **mel_spec_kwargs,
         )
 
@@ -381,70 +310,24 @@ def load_dataset(
 
 
 def collate_fn(batch):
-
-    """
-    deturberate the batch"""
-    """
-    ########
-    audios = [item["audios"].squeeze(0) for item in batch]
-    audio_lengths = torch.LongTensor([audio.shape[-1] for audio in audios])
-    max_audio_length = audio_lengths.amax()
-    padded_audios = []
-    for audio in audios:
-        padding = (0, max_audio_length - audio.size(-1))
-        padded_audio = F.pad(audio, padding, value=0)
-        padded_audios.append(padded_audio)
-    
-    noisy_audios = add_noise(audios, lengths=audio_lengths)
-    reverb_audios = add_reverb(audios)
-
-    audio_lengths += audio_lengths * 2
-
-    text = [item["text"] for item in batch]
-    text_lengths = torch.LongTensor([len(item) for item in text])
-    text += text *2
-    text_lengths += text_lengths * 2
-    
-
-
-
-
-    
-    audios = audio.extend(torch.stack(audio_audios))
-    """
-
-
-    ##############
        
-    # Get original and augmented spectrograms
-    orig_mel_specs = [item["clean_mel_spec"] for item in batch]
-    aug_mel_specs = [item["noisy_mel_spec"] for item in batch]
-    aug_types = [item["aug_type"] for item in batch]
-    
-    # Get lengths
-    mel_lengths = torch.LongTensor([spec.shape[-1] for spec in orig_mel_specs])
+    mel_specs = [item["mel_spec"].squeeze(0) for item in batch]
+    mel_lengths = torch.LongTensor([spec.shape[-1] for spec in mel_specs])
     max_mel_length = mel_lengths.amax()
 
-    # Pad spectrograms
-    padded_orig_specs = []
-    padded_aug_specs = []
-    for orig_spec, aug_spec in zip(orig_mel_specs, aug_mel_specs):
-        padding = (0, max_mel_length - orig_spec.size(-1))
-        padded_orig_specs.append(F.pad(orig_spec, padding, value=0))
-        padded_aug_specs.append(F.pad(aug_spec, padding, value=0))
+    padded_mel_specs = []
+    for spec in mel_specs:  # TODO. maybe records mask for attention here
+        padding = (0, max_mel_length - spec.size(-1))
+        padded_spec = F.pad(spec, padding, value=0)
+        padded_mel_specs.append(padded_spec)
 
-    # Stack tensors
-    orig_mel_specs = torch.stack(padded_orig_specs)
-    aug_mel_specs = torch.stack(padded_aug_specs)
+    mel_specs = torch.stack(padded_mel_specs)
 
-    # Handle text
     text = [item["text"] for item in batch]
     text_lengths = torch.LongTensor([len(item) for item in text])
 
     return dict(
-        orig_mel=orig_mel_specs,
-        aug_mel=aug_mel_specs,
-        aug_types=aug_types,
+        mel=mel_specs,
         mel_lengths=mel_lengths,
         text=text,
         text_lengths=text_lengths,

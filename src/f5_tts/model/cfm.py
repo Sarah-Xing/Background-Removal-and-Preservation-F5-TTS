@@ -18,7 +18,7 @@ from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 from torchdiffeq import odeint
 
-from f5_tts.model.modules import MelSpec
+from f5_tts.model.modules import MelSpec, SpeakerEncoder
 from f5_tts.model.utils import (
     default,
     exists,
@@ -73,6 +73,13 @@ class CFM(nn.Module):
 
         # vocab map for tokenization
         self.vocab_char_map = vocab_char_map
+
+        # speaker encoder for style control
+        self.speaker_encoder1 = SpeakerEncoder(num_layers=2, num_heads=2, dim=100)
+        self.speaker_encoder2 = SpeakerEncoder(num_layers=2, num_heads=2, dim=100)
+
+        # Add control embedding layer - using nn.Embedding instead of Linear
+        self.control_embedding = nn.Embedding(num_embeddings=2, embedding_dim=712) 
 
     @property
     def device(self):
@@ -154,6 +161,12 @@ class CFM(nn.Module):
         else:  # save memory and speed up, as single inference need no mask currently
             mask = None
 
+        c_embedding = self.control_embedding(torch.tensor([1], device=self.device))  # Shape: [batch, 100]
+        c_embedding = c_embedding.unsqueeze(1)  # Shape: [batch, 1, 100]
+        # Apply speaker encoders to x1
+        x1_encoded_remove = self.speaker_encoder1(cond)
+        x1_encoded_reserve = self.speaker_encoder2(cond)
+
         # neural ode
 
         def fn(t, x):
@@ -162,13 +175,13 @@ class CFM(nn.Module):
 
             # predict flow
             pred = self.transformer(
-                x=x, cond=step_cond, text=text, time=t, mask=mask, drop_audio_cond=False, drop_text=False, cache=True
+                x=x, cond=step_cond, text=text, time=t, mask=mask, drop_audio_cond=False, drop_text=False, cont=c_embedding, spk_embedding=x1_encoded_reserve, cache=True
             )
             if cfg_strength < 1e-5:
                 return pred
 
             null_pred = self.transformer(
-                x=x, cond=step_cond, text=text, time=t, mask=mask, drop_audio_cond=True, drop_text=True, cache=True
+                x=x, cond=step_cond, text=text, time=t, mask=mask, drop_audio_cond=True, drop_text=True, cont=c_embedding, spk_embedding=x1_encoded_reserve, cache=True
             )
             return pred + (pred - null_pred) * cfg_strength
 
@@ -209,19 +222,20 @@ class CFM(nn.Module):
 
     def forward(
         self,
-        inp: float["b n d"] | float["b nw"],  # mel or raw wave  # noqa: F722
+        orig_inp: float["b n d"] | float["b nw"],  # mel or raw wave  # noqa: F722
+        aug_inp: float["b n d"] | float["b nw"],  # mel or raw wave  # noqa: F722
         text: int["b nt"] | list[str],  # noqa: F722
         *,
         lens: int["b"] | None = None,  # noqa: F821
         noise_scheduler: str | None = None,
     ):
         # handle raw wave
-        if inp.ndim == 2:
-            inp = self.mel_spec(inp)
-            inp = inp.permute(0, 2, 1)
-            assert inp.shape[-1] == self.num_channels
+        if orig_inp.ndim == 2:
+            orig_inp = self.mel_spec(orig_inp)
+            orig_inp = orig_inp.permute(0, 2, 1)
+            assert orig_inp.shape[-1] == self.num_channels
 
-        batch, seq_len, dtype, device, _σ1 = *inp.shape[:2], inp.dtype, self.device, self.sigma
+        batch, seq_len, dtype, device, _σ1 = *orig_inp.shape[:2], orig_inp.dtype, self.device, self.sigma
 
         # handle text as string
         if isinstance(text, list):
@@ -244,8 +258,18 @@ class CFM(nn.Module):
         if exists(mask):
             rand_span_mask &= mask
 
+        #speaker encoder
+        # Generate random binary control variable c for each sample in batch
+        c = torch.randint(0, 2, (batch,), device=self.device)  # Generate 0 or 1 randomly
+        # Convert control variable to embedding using nn.Embedding
+        c_embedding = self.control_embedding(c)  # Shape: [batch, 100]
+        c_embedding = c_embedding.unsqueeze(1)  # Shape: [batch, 1, 100]
+
+        c = c.view(-1, 1, 1)  # Shape: [batch, 1, 1] for broadcasting
+
         # mel is x1
-        x1 = inp
+        x1 = orig_inp
+        x1_aug = aug_inp
 
         # x0 is gaussian noise
         x0 = torch.randn_like(x1)
@@ -257,10 +281,11 @@ class CFM(nn.Module):
         # sample xt (φ_t(x) in the paper)
         t = time.unsqueeze(-1).unsqueeze(-1)
         φ = (1 - t) * x0 + t * x1
-        flow = x1 - x0
+        #flow = x1 - x0
+        flow = torch.where(c == 0, x1 - x0, x1_aug - x0)
 
         # only predict what is within the random mask span for infilling
-        cond = torch.where(rand_span_mask[..., None], torch.zeros_like(x1), x1)
+        cond = torch.where(rand_span_mask[..., None], torch.zeros_like(x1_aug), x1_aug)
 
         # transformer and cfg training with a drop rate
         drop_audio_cond = random() < self.audio_drop_prob  # p_drop in voicebox paper
@@ -269,11 +294,21 @@ class CFM(nn.Module):
             drop_text = True
         else:
             drop_text = False
-
+        
+        
+        # Apply speaker encoders to x1
+        x1_encoded_remove = self.speaker_encoder1(x1_aug)
+        x1_encoded_reserve = self.speaker_encoder2(x1_aug)
+        
+        # Mix the outputs based on control variable c
+        spk_embedding = c * x1_encoded_remove + (1 - c) * x1_encoded_reserve
+        
+        
+        
         # if want rigourously mask out padding, record in collate_fn in dataset.py, and pass in here
         # adding mask will use more memory, thus also need to adjust batchsampler with scaled down threshold for long sequences
         pred = self.transformer(
-            x=φ, cond=cond, text=text, time=time, drop_audio_cond=drop_audio_cond, drop_text=drop_text
+            x=φ, cond=cond, text=text, time=time, drop_audio_cond=drop_audio_cond, cont=c_embedding, drop_text=drop_text, spk_embedding=spk_embedding
         )
 
         # flow matching loss

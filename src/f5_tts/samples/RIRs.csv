@@ -1,0 +1,6 @@
+ID,duration,file_path,wav_format,wav_opts
+rir1,1.0,/4T/home/hua/TTS/F5_noisy/F5-TTS/src/f5_tts/samples/RIRs/rir1.wav,wav,
+rir2,1.3653125,/4T/home/hua/TTS/F5_noisy/F5-TTS/src/f5_tts/samples/RIRs/rir2.wav,wav,
+rir3,2.0,/4T/home/hua/TTS/F5_noisy/F5-TTS/src/f5_tts/samples/RIRs/rir3.wav,wav,
+rir4,0.5,/4T/home/hua/TTS/F5_noisy/F5-TTS/src/f5_tts/samples/RIRs/rir4.wav,wav,
+

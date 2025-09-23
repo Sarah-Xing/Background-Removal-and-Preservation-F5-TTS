@@ -27,6 +27,7 @@ Use guidance see [#57 here](https://github.com/SWivid/F5-TTS/discussions/57#disc
 ```bash
 python src/f5_tts/train/datasets/prepare_csv_wavs.py
 ```
+### prepare noise.csv and RIR.csv like sample/noise.csv and sample/RIR.csv
 
 ## Training & Finetuning
 
