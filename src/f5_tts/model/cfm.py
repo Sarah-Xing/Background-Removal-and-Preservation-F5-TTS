@@ -103,6 +103,7 @@ class CFM(nn.Module):
         duplicate_test=False,
         t_inter=0.1,
         edit_mask=None,
+        control=0,
     ):
         self.eval()
         # raw wave
@@ -161,11 +162,12 @@ class CFM(nn.Module):
         else:  # save memory and speed up, as single inference need no mask currently
             mask = None
 
-        c_embedding = self.control_embedding(torch.tensor([1], device=self.device))  # Shape: [batch, 100]
+        c_embedding = self.control_embedding(torch.tensor([control], device=self.device))  # Shape: [batch, 100]
         c_embedding = c_embedding.unsqueeze(1)  # Shape: [batch, 1, 100]
         # Apply speaker encoders to x1
         x1_encoded_remove = self.speaker_encoder1(cond)
         x1_encoded_reserve = self.speaker_encoder2(cond)
+        spk_embedding = control * x1_encoded_remove + (1 - control) * x1_encoded_reserve
 
         # neural ode
 
@@ -175,13 +177,13 @@ class CFM(nn.Module):
 
             # predict flow
             pred = self.transformer(
-                x=x, cond=step_cond, text=text, time=t, mask=mask, drop_audio_cond=False, drop_text=False, cont=c_embedding, spk_embedding=x1_encoded_reserve, cache=True
+                x=x, cond=step_cond, text=text, time=t, mask=mask, drop_audio_cond=False, drop_text=False, cont=c_embedding, spk_embedding=spk_embedding, cache=True
             )
             if cfg_strength < 1e-5:
                 return pred
 
             null_pred = self.transformer(
-                x=x, cond=step_cond, text=text, time=t, mask=mask, drop_audio_cond=True, drop_text=True, cont=c_embedding, spk_embedding=x1_encoded_reserve, cache=True
+                x=x, cond=step_cond, text=text, time=t, mask=mask, drop_audio_cond=True, drop_text=True, cont=c_embedding, spk_embedding=spk_embedding, cache=True
             )
             return pred + (pred - null_pred) * cfg_strength
 

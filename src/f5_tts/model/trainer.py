@@ -412,6 +412,7 @@ class Trainer:
                                 steps=nfe_step,
                                 cfg_strength=cfg_strength,
                                 sway_sampling_coef=sway_sampling_coef,
+                                control=0,
                             )
                             generated = generated.to(torch.float32)
                             gen_mel_spec = generated[:, ref_audio_len:, :].permute(0, 2, 1).to(self.accelerator.device)
@@ -424,10 +425,35 @@ class Trainer:
                                 ref_audio = vocoder(ref_mel_spec).squeeze(0).cpu()
 
                         torchaudio.save(
-                            f"{log_samples_path}/update_{global_update}_gen.wav", gen_audio, target_sample_rate
+                            f"{log_samples_path}/update_{global_update}_gen_reserve.wav", gen_audio, target_sample_rate
                         )
                         torchaudio.save(
-                            f"{log_samples_path}/update_{global_update}_ref.wav", ref_audio, target_sample_rate
+                            f"{log_samples_path}/update_{global_update}_ref_noisy.wav", ref_audio, target_sample_rate
+                        )
+                        generated, _ = self.accelerator.unwrap_model(self.model).sample(
+                                cond=aug_mel_spec[0][:ref_audio_len].unsqueeze(0),
+                                text=infer_text,
+                                duration=ref_audio_len * 2,
+                                steps=nfe_step,
+                                cfg_strength=cfg_strength,
+                                sway_sampling_coef=sway_sampling_coef,
+                                control=1,
+                            )
+                        generated = generated.to(torch.float32)
+                        gen_mel_spec = generated[:, ref_audio_len:, :].permute(0, 2, 1).to(self.accelerator.device)
+                        ref_mel_spec = batch["orig_mel"][0].unsqueeze(0)
+                        if self.vocoder_name == "vocos":
+                            gen_audio = vocoder.decode(gen_mel_spec).cpu()
+                            ref_audio = vocoder.decode(ref_mel_spec).cpu()
+                        elif self.vocoder_name == "bigvgan":
+                            gen_audio = vocoder(gen_mel_spec).squeeze(0).cpu()
+                            ref_audio = vocoder(ref_mel_spec).squeeze(0).cpu()
+
+                        torchaudio.save(
+                            f"{log_samples_path}/update_{global_update}_gen_remove.wav", gen_audio, target_sample_rate
+                        )
+                        torchaudio.save(
+                            f"{log_samples_path}/update_{global_update}_ref_clean.wav", ref_audio, target_sample_rate
                         )
 
                 if global_update % self.last_per_updates == 0 and self.accelerator.sync_gradients:
