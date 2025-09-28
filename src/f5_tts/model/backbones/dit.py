@@ -82,16 +82,16 @@ class TextEmbedding(nn.Module):
 
 
 class InputEmbedding(nn.Module):
-    def __init__(self, mel_dim, text_dim, out_dim):
+    def __init__(self, mel_dim, text_dim, spk_dim, out_dim):
         super().__init__()
-        self.proj = nn.Linear(mel_dim * 2 + text_dim, out_dim)
+        self.proj = nn.Linear(mel_dim * 2 + text_dim + spk_dim, out_dim)
         self.conv_pos_embed = ConvPositionEmbedding(dim=out_dim)
 
     def forward(self, x: float["b n d"], cond: float["b n d"], text_embed: float["b n d"], spk_embedding: float["b 1 d"], cont: float["b 1 d"], drop_audio_cond=False):  # noqa: F722
         if drop_audio_cond:  # cfg for cond audio
             cond = torch.zeros_like(cond)
 
-        x = self.proj(torch.cat((x, cond, text_embed), dim=-1) + spk_embedding + cont)
+        x = self.proj(torch.cat((x, cond, text_embed, spk_embedding), dim=-1) + cont)
         x = self.conv_pos_embed(x) + x
         return x
 
@@ -113,6 +113,7 @@ class DiT(nn.Module):
         text_num_embeds=256,
         text_dim=None,
         text_mask_padding=True,
+        spk_dim=100,
         qk_norm=None,
         conv_layers=0,
         pe_attn_head=None,
@@ -128,7 +129,7 @@ class DiT(nn.Module):
             text_num_embeds, text_dim, mask_padding=text_mask_padding, conv_layers=conv_layers
         )
         self.text_cond, self.text_uncond = None, None  # text cache
-        self.input_embed = InputEmbedding(mel_dim, text_dim, dim)
+        self.input_embed = InputEmbedding(mel_dim, text_dim, spk_dim, dim)
 
         self.rotary_embed = RotaryEmbedding(dim_head)
 

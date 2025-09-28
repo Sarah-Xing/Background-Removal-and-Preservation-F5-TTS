@@ -79,7 +79,7 @@ class CFM(nn.Module):
         self.speaker_encoder2 = SpeakerEncoder(num_layers=2, num_heads=2, dim=100)
 
         # Add control embedding layer - using nn.Embedding instead of Linear
-        self.control_embedding = nn.Embedding(num_embeddings=2, embedding_dim=712) 
+        self.control_embedding = nn.Embedding(num_embeddings=2, embedding_dim=812) 
 
     @property
     def device(self):
